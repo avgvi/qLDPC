@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Callable, Hashable, MutableMapping
 from typing import Any, Generic, ParamSpec, TypeVar, cast
 
-import diskcache
+import diskcache_community
 import platformdirs
 
 _Params = ParamSpec("_Params")
@@ -77,11 +77,11 @@ class CachedFunction(Generic[_Params, _Result]):
         """Retrieve a result from the cache if available, and otherwise compute and cache it."""
         cache = get_disk_cache(self._cache_name, cache_dir=self._cache_dir)
         key = self._get_key(*args, **kwargs)
-        if key in cache:
-            return cast(_Result, cache[key])
-        result = self._function(*args, **kwargs)
-        cache[key] = result
-        return result
+        result = cache.get(key)
+        if result is None:
+            result = self._function(*args, **kwargs)
+            cache[key] = result
+        return cast(_Result, result)
 
     def refresh(self, *args: _Params.args, **kwargs: _Params.kwargs) -> _Result:
         """Recompute the result for these arguments and overwrite the cached value."""
@@ -115,7 +115,12 @@ def get_disk_cache(
     """
     if _running_with_pytest():
         return {}
-    return diskcache.Cache(get_disk_cache_path(cache_name, cache_dir=cache_dir))
+    path = get_disk_cache_path(cache_name, cache_dir=cache_dir)
+    if not cache_dir:
+        disk: type[diskcache_community.Disk] = diskcache_community.Disk
+    else:
+        disk = diskcache_community.SafeDisk.with_numpy().with_options(on_error="miss")
+    return cast(MutableMapping[Hashable, Any], diskcache_community.Cache(path, disk=disk))
 
 
 def get_disk_cache_path(

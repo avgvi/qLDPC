@@ -5,15 +5,24 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import pathlib
 import pickle
 import unittest.mock
 from collections.abc import Hashable
 
+import diskcache_community
 import pytest
 
 import qldpc.cache
 import qldpc.external._codes
+
+
+@dataclasses.dataclass
+class Custom:
+    """A class that SafeDisk does not store."""
+
+    value: int
 
 
 def test_pytest() -> None:
@@ -40,7 +49,7 @@ def test_use_disk_cache(tmp_path: pathlib.Path) -> None:
     cache: dict[Hashable, int] = {}
     with (
         unittest.mock.patch("qldpc.cache._running_with_pytest", return_value=False),
-        unittest.mock.patch("diskcache.Cache", return_value=cache),
+        unittest.mock.patch("diskcache_community.Cache", return_value=cache),
     ):
 
         @qldpc.cache.use_disk_cache("test_name")
@@ -77,7 +86,7 @@ def test_refresh() -> None:
     cache: dict[Hashable, int] = {}
     with (
         unittest.mock.patch("qldpc.cache._running_with_pytest", return_value=False),
-        unittest.mock.patch("diskcache.Cache", return_value=cache),
+        unittest.mock.patch("diskcache_community.Cache", return_value=cache),
     ):
         calls: list[tuple[int, int]] = []
 
@@ -111,6 +120,46 @@ def test_refresh() -> None:
         assert double.refresh(4) == 8
         assert cache["key-4"] == 8
         assert double(4) == 8
+
+
+def test_planted_entry(tmp_path: pathlib.Path) -> None:
+    """A cache entry that would run code when it is unpickled is recomputed instead."""
+
+    class Planted:
+        def __reduce__(self) -> tuple[object, ...]:
+            return pytest.fail, ("a planted cache entry ran code",)
+
+    calls: list[str] = []
+
+    @qldpc.cache.use_disk_cache("test_name", cache_dir=tmp_path)
+    def get_five(value: str) -> int:
+        calls.append(value)
+        return 5
+
+    # anyone who can write to the cache directory can store a pickle with the default disk
+    with diskcache_community.Cache(tmp_path / "test_name", disk=diskcache_community.Disk) as cache:
+        cache["test_arg"] = Planted()
+
+    with unittest.mock.patch("qldpc.cache._running_with_pytest", return_value=False):
+        assert get_five("test_arg") == get_five("test_arg") == 5
+    assert calls == ["test_arg"]
+
+
+def test_default_cache_dir(tmp_path: pathlib.Path) -> None:
+    """The default cache directory caches results of any type, as diskcache's default Disk does."""
+    calls: list[int] = []
+
+    @qldpc.cache.use_disk_cache("custom")
+    def get_custom(value: int) -> Custom:
+        calls.append(value)
+        return Custom(value)
+
+    with (
+        unittest.mock.patch("qldpc.cache._running_with_pytest", return_value=False),
+        unittest.mock.patch("platformdirs.user_cache_dir", return_value=str(tmp_path)),
+    ):
+        assert get_custom(1) == get_custom(1) == Custom(1)
+        assert calls == [1]
 
 
 def test_pickle() -> None:
